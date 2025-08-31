@@ -1,6 +1,8 @@
 const std = @import("std");
 
-pub fn Bind(comptime Type: type) type {
+pub fn Bind(comptime Type: type, comptime conf: struct {
+  is_bind: enum {bind, auto, none} = .bind,
+}) type {
   return struct {
     const Self = @This();
 
@@ -8,10 +10,11 @@ pub fn Bind(comptime Type: type) type {
     const size = fields.len;
 
     context: usize = 0,
-    is_bind: std.bit_set.StaticBitSet(size) = .initEmpty(),
     methods: [size]usize = [_]usize{0} ** size,
+    is_bind: if (conf.is_bind == .auto) std.bit_set.StaticBitSet(size) else void = 
+             if (conf.is_bind == .auto) .initEmpty()                   else {},
 
-    pub fn init(host: anytype) Self {
+    pub fn init(host: anytype, alias: anytype) Self {
       var self = Self {};
       const Host: type = if (@TypeOf(host) == type) host else blk: {
         self.context = @intFromPtr(host);
@@ -19,38 +22,65 @@ pub fn Bind(comptime Type: type) type {
       };
       inline for (fields, 0..) |field, i| {
         const name = field.name;
-        const method = if (@hasDecl(Host, name)) @field(Host, name) else {};
+        const method =
+          if (@hasField(@TypeOf(alias), name))
+            @field(alias, name)
+          else if (@hasDecl(Host, name))
+            @field(Host, name)
+          else
+            {};
         if (@TypeOf(method) == void) continue;
         const is_ptr = comptime std.meta.activeTag(@typeInfo(@TypeOf(method))) == .pointer;
-        const Method = if (is_ptr) std.meta.Child(@TypeOf(method)) else @TypeOf(method);
-        const is_bind = @typeInfo(Method).@"fn".params.len == @typeInfo(BindFn(name)).@"fn".params.len;
-        if (is_bind) self.is_bind.set(i);
         self.methods[i] = @intFromPtr(if (is_ptr) method else &method);
+
+        if (comptime conf.is_bind == .auto) {
+          const Method = if (is_ptr) std.meta.Child(@TypeOf(method)) else @TypeOf(method);
+          const is_bind = @typeInfo(Method).@"fn".params.len == @typeInfo(BindFn(name)).@"fn".params.len;
+          if (is_bind) self.is_bind.set(i);
+        }
       }
       return self;
     }
 
     pub fn call(self: *const Self, comptime name: []const u8, args: Args(name)) Return(name) {
       const method = self.methods[id(name)];
-      if (self.is_bind.isSet(id(name))) {
-        const bind_fn: *const BindFn(name) = @ptrFromInt(method);
-        if (comptime shouldTry(name)) {
-          return try @call(.auto, bind_fn, .{ self.context } ++ args);
+      switch (comptime conf.is_bind) {
+        .bind => {
+          const bind_fn: *const BindFn(name) = @ptrFromInt(method);
+          return if (comptime shouldTry(name))
+            try @call(.auto, bind_fn, .{ self.context } ++ args)
+          else  @call(.auto, bind_fn, .{ self.context } ++ args);
+        },
+        .none => {
+          const free_fn: *const FreeFn(name) = @ptrFromInt(method);
+          return if (comptime shouldTry(name))
+            try @call(.auto, free_fn, args)
+          else  @call(.auto, free_fn, args);
+        },
+        .auto => if (self.is_bind.isSet(id(name))) {
+          const bind_fn: *const BindFn(name) = @ptrFromInt(method);
+          return if (comptime shouldTry(name))
+            try @call(.auto, bind_fn, .{ self.context } ++ args)
+          else  @call(.auto, bind_fn, .{ self.context } ++ args);
         } else {
-          return @call(.auto, bind_fn, .{ self.context } ++ args);
-        }
-      } else {
-        const free_fn: *const FreeFn(name) = @ptrFromInt(method);
-        if (comptime shouldTry(name)) {
-          return try @call(.auto, free_fn, args);
-        } else {
-          return @call(.auto, free_fn, args);
-        }
+          const free_fn: *const FreeFn(name) = @ptrFromInt(method);
+          return if (comptime shouldTry(name))
+            try @call(.auto, free_fn, args)
+          else  @call(.auto, free_fn, args);
+        },
       }
     }
 
     pub fn canCall(self: *const Self, comptime name: []const u8) bool {
-      return self.methods[id(name)] != 0 and (!self.is_bind.isSet(id(name)) or self.context != 0);
+      return self.methods[id(name)] != 0;
+    }
+
+    pub fn getBindFn(self: *const Self, comptime name: []const u8) *const BindFn(name) {
+      return @ptrFromInt(self.methods[id(name)]);
+    }
+
+    pub fn getFreeFn(self: *const Self, comptime name: []const u8) *const FreeFn(name) {
+      return @ptrFromInt(self.methods[id(name)]);
     }
 
     fn BindFn(comptime name: []const u8) type {

@@ -84,13 +84,19 @@ pub fn Bind(comptime Type: type, comptime conf: struct {
     }
 
     fn BindFn(comptime name: []const u8) type {
-      comptime var info = @typeInfo(FreeFn(name));
-      info.@"fn".params = .{std.builtin.Type.Fn.Param{
-        .is_generic = false,
-        .is_noalias = false,
-        .type = usize,
-      }} ++ info.@"fn".params;
-      return @as(type, @Type(info));
+      const info = @typeInfo(FreeFn(name)).@"fn";
+      comptime var param_types: [info.params.len + 1]type = undefined;
+      comptime var param_attrs: [info.params.len + 1]std.builtin.Type.Fn.Param.Attributes = undefined;
+      param_types[0] = usize;
+      param_attrs[0] = .{};
+      inline for (info.params, 1..) |param, i| {
+        param_types[i] = param.type;
+        param_attrs[i] = .{ .@"noalias" = param.is_noalias };
+      }
+      return @as(type, @Fn(&param_types, &param_attrs, info.return_type orelse void, .{
+        .@"callconv" = info.calling_convention,
+        .varargs = info.is_var_args,
+      }));
     }
 
     fn FreeFn(comptime name: []const u8) type {

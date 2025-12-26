@@ -1,8 +1,8 @@
 .{
   .name = .bind,
   .version = "1.0.0",
+  .min_zig_version = "0.16.0-dev.1657+985a3565c",
   .fingerprint = 0x46ccf353aa242cd3,
-  .minimum_zig_version = "0.16.0-dev.23+47a2f2dda",
   .dependencies = .{
   },
   .paths = .{

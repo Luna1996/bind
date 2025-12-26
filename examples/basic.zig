@@ -23,5 +23,5 @@ pub fn main() !void {
   const f = ai.getBindFn("f");
   for (0..1000000) |_| _ = f(ai.context);
   const t4 = try std.time.Instant.now();
-  std.debug.print("{d}, {d}, {d}\n", .{t2.since(t1), t3.since(t2), t4.since(t3)});
+  std.debug.print("1,000,000 function call test:\n  direct call: {d: >8} ns\nindirect call: {d: >8} ns\n   proxy call: {d: >8} ns\n", .{t2.since(t1), t4.since(t3), t3.since(t2)});
 }

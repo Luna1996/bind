@@ -1,18 +1,16 @@
 const std = @import("std");
 
-pub fn Bind(comptime Type: type, comptime conf: struct {
-  is_bind: enum {bind, auto, none} = .bind,
-}) type {
+pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type {
   return struct {
     const Self = @This();
 
-    const fields = @typeInfo(Type).@"struct".fields;
-    const size = fields.len;
+    const type_map = getTypeMap();
+    const type_len = type_map.kvs.len;
 
     context: usize = 0,
-    methods: [size]usize = [_]usize{0} ** size,
-    is_bind: if (conf.is_bind == .auto) std.bit_set.StaticBitSet(size) else void = 
-             if (conf.is_bind == .auto) .initEmpty()                   else {},
+    methods: Methods() = .{},
+    is_bind: if (kind == .auto) std.bit_set.StaticBitSet(type_len) else void = 
+             if (kind == .auto) .initEmpty()                       else {},
 
     pub fn init(host: anytype, alias: anytype) Self {
       var self = Self {};
@@ -20,20 +18,15 @@ pub fn Bind(comptime Type: type, comptime conf: struct {
         self.context = @intFromPtr(host);
         break :blk std.meta.Child(@TypeOf(host));
       };
-      inline for (fields, 0..) |field, i| {
-        const name = field.name;
-        const method =
-          if (@hasField(@TypeOf(alias), name))
-            @field(alias, name)
-          else if (@hasDecl(Host, name))
-            @field(Host, name)
-          else
-            {};
+      inline for (type_map.keys()) |name| {
+        const method = if (@hasField(@TypeOf(alias), name)) @field(alias, name)
+                       else if (@hasDecl(Host, name))       @field(Host, name)
+                       else                                 {};
         if (@TypeOf(method) == void) continue;
         const is_ptr = comptime std.meta.activeTag(@typeInfo(@TypeOf(method))) == .pointer;
         self.methods[i] = @intFromPtr(if (is_ptr) method else &method);
 
-        if (comptime conf.is_bind == .auto) {
+        if (comptime conf.kind == .auto) {
           const Method = if (is_ptr) std.meta.Child(@TypeOf(method)) else @TypeOf(method);
           const is_bind = @typeInfo(Method).@"fn".params.len == @typeInfo(BindFn(name)).@"fn".params.len;
           if (is_bind) self.is_bind.set(i);
@@ -44,7 +37,7 @@ pub fn Bind(comptime Type: type, comptime conf: struct {
 
     pub fn call(self: *const Self, comptime name: []const u8, args: Args(name)) Return(name) {
       const method = self.methods[id(name)];
-      switch (comptime conf.is_bind) {
+      switch (comptime conf.kind) {
         .bind => {
           const bind_fn: *const BindFn(name) = @ptrFromInt(method);
           return if (comptime shouldTry(name))
@@ -83,6 +76,15 @@ pub fn Bind(comptime Type: type, comptime conf: struct {
       return @ptrFromInt(self.methods[id(name)]);
     }
 
+    fn getTypeMap() std.StaticStringMap(type) {
+      const fields = @typeInfo(@TypeOf(body)).@"struct".fields;
+      comptime var kv_list: [fields.len]std.meta.Tuple(&.{[]const u8, type}) = undefined;
+      inline for (fields, 0..) |field, i| {
+        kv_list[i] = .{field.name, @field(body, field.name)};
+      }
+      return .initComptime(kv_list);
+    }
+
     fn BindFn(comptime name: []const u8) type {
       const info = @typeInfo(FreeFn(name)).@"fn";
       comptime var param_types: [info.params.len + 1]type = undefined;
@@ -93,10 +95,10 @@ pub fn Bind(comptime Type: type, comptime conf: struct {
         param_types[i] = param.type;
         param_attrs[i] = .{ .@"noalias" = param.is_noalias };
       }
-      return @as(type, @Fn(&param_types, &param_attrs, info.return_type orelse void, .{
+      return @Fn(&param_types, &param_attrs, info.return_type orelse void, .{
         .@"callconv" = info.calling_convention,
         .varargs = info.is_var_args,
-      }));
+      });
     }
 
     fn FreeFn(comptime name: []const u8) type {
@@ -104,7 +106,7 @@ pub fn Bind(comptime Type: type, comptime conf: struct {
     }
 
     fn Args(comptime name: []const u8) type {
-      return @as(type, std.meta.ArgsTuple(FreeFn(name)));
+      return std.meta.ArgsTuple(FreeFn(name));
     }
 
     fn Return(comptime name: []const u8) type {

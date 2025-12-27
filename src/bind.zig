@@ -4,13 +4,22 @@ pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type
   return struct {
     const Self = @This();
 
-    const type_map = getTypeMap();
-    const type_len = type_map.kvs.len;
+    const names = std.meta.fieldNames(@TypeOf(body));
 
-    context: usize = 0,
-    methods: Methods() = .{},
-    is_bind: if (kind == .auto) std.bit_set.StaticBitSet(type_len) else void = 
-             if (kind == .auto) .initEmpty()                       else {},
+    const Methods = @Struct(
+                      .auto, null, names,
+                      &(.{usize} ** names.len),
+                      &(.{std.builtin.Type.StructField.Attributes{.default_value_ptr = &@as(usize, 0)}} ** names.len),
+                    );
+    const IsBind  = if (kind == .auto) @Struct(
+                      .@"packed", std.meta.Int(.unsigned, @intCast(names.len)), names,
+                      &(.{bool} ** names.len),
+                      &(.{std.builtin.Type.StructField.Attributes{.default_value_ptr = &false}} ** names.len),
+                    ) else struct {};
+
+    context: usize   = 0,
+    methods: Methods = .{},
+    is_bind: IsBind  = .{},
 
     pub fn init(host: anytype, alias: anytype) Self {
       var self = Self {};
@@ -18,26 +27,26 @@ pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type
         self.context = @intFromPtr(host);
         break :blk std.meta.Child(@TypeOf(host));
       };
-      inline for (type_map.keys()) |name| {
+      inline for (names) |name| {
         const method = if (@hasField(@TypeOf(alias), name)) @field(alias, name)
                        else if (@hasDecl(Host, name))       @field(Host, name)
                        else                                 {};
         if (@TypeOf(method) == void) continue;
         const is_ptr = comptime std.meta.activeTag(@typeInfo(@TypeOf(method))) == .pointer;
-        self.methods[i] = @intFromPtr(if (is_ptr) method else &method);
+        @field(self.methods, name) = @intFromPtr(if (is_ptr) method else &method);
 
-        if (comptime conf.kind == .auto) {
+        if (comptime blk: {
+          if (kind != .auto) break :blk false;
           const Method = if (is_ptr) std.meta.Child(@TypeOf(method)) else @TypeOf(method);
-          const is_bind = @typeInfo(Method).@"fn".params.len == @typeInfo(BindFn(name)).@"fn".params.len;
-          if (is_bind) self.is_bind.set(i);
-        }
+          break :blk @typeInfo(Method).@"fn".params.len == @typeInfo(BindFn(name)).@"fn".params.len;
+        }) @field(self.is_bind, name) = true;
       }
       return self;
     }
 
     pub fn call(self: *const Self, comptime name: []const u8, args: Args(name)) Return(name) {
-      const method = self.methods[id(name)];
-      switch (comptime conf.kind) {
+      const method = @field(self.methods, name);
+      switch (comptime kind) {
         .bind => {
           const bind_fn: *const BindFn(name) = @ptrFromInt(method);
           return if (comptime shouldTry(name))
@@ -50,7 +59,7 @@ pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type
             try @call(.auto, free_fn, args)
           else  @call(.auto, free_fn, args);
         },
-        .auto => if (self.is_bind.isSet(id(name))) {
+        .auto => if (@field(self.is_bind, name)) {
           const bind_fn: *const BindFn(name) = @ptrFromInt(method);
           return if (comptime shouldTry(name))
             try @call(.auto, bind_fn, .{ self.context } ++ args)
@@ -65,24 +74,15 @@ pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type
     }
 
     pub fn canCall(self: *const Self, comptime name: []const u8) bool {
-      return self.methods[id(name)] != 0;
+      return @field(self.methods, name) != 0;
     }
 
     pub fn getBindFn(self: *const Self, comptime name: []const u8) *const BindFn(name) {
-      return @ptrFromInt(self.methods[id(name)]);
+      return @ptrFromInt(@field(self.methods, name));
     }
 
     pub fn getFreeFn(self: *const Self, comptime name: []const u8) *const FreeFn(name) {
-      return @ptrFromInt(self.methods[id(name)]);
-    }
-
-    fn getTypeMap() std.StaticStringMap(type) {
-      const fields = @typeInfo(@TypeOf(body)).@"struct".fields;
-      comptime var kv_list: [fields.len]std.meta.Tuple(&.{[]const u8, type}) = undefined;
-      inline for (fields, 0..) |field, i| {
-        kv_list[i] = .{field.name, @field(body, field.name)};
-      }
-      return .initComptime(kv_list);
+      return @ptrFromInt(@field(self.methods, name));
     }
 
     fn BindFn(comptime name: []const u8) type {
@@ -102,7 +102,7 @@ pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type
     }
 
     fn FreeFn(comptime name: []const u8) type {
-      return fields[id(name)].type;
+      return @as(type, @field(body, name));
     }
 
     fn Args(comptime name: []const u8) type {
@@ -115,10 +115,6 @@ pub fn Bind(comptime body: anytype, comptime kind: enum {bind, auto, none}) type
 
     fn shouldTry(comptime name: []const u8) bool {
       return std.meta.activeTag(@typeInfo(Return(name))) == .error_union;
-    }
-
-    fn id(comptime name: []const u8) comptime_int {
-      return std.meta.fieldIndex(Type, name).?;
     }
   };
 }

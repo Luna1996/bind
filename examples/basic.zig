@@ -8,11 +8,12 @@ const A = struct {
   }
 };
 
-const I = Bind(struct {
-  f: fn() usize,
-}, .{});
+const I = Bind(.{
+  .f = fn() usize,
+}, .bind);
 
 pub fn main() !void {
+  std.debug.print("A: {d} Bytes\nI: {d} Bytes\n", .{@sizeOf(A),  @sizeOf(I)});
   const a = A { .x = 3 };
   const ai = I.init(&a, .{.f = A.t});
   const t1 = try std.time.Instant.now();
